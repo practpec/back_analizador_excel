@@ -66,6 +66,7 @@ func (h *ContactHandler) UploadExcel(c *gin.Context) {
 			continue
 		}
 
+		i=i
 		// Limpiar y procesar cada campo
 		clientKey := strings.TrimSpace(fmt.Sprintf("%v", row[0]))
 		name := strings.TrimSpace(fmt.Sprintf("%v", row[1]))
@@ -86,11 +87,6 @@ func (h *ContactHandler) UploadExcel(c *gin.Context) {
 		}
 
 		contacts = append(contacts, contact)
-		
-		// Limitar a los primeros 50 registros para evitar sobrecarga
-		if i >= 49 {
-			break
-		}
 	}
 
 	// Guardar contactos
@@ -106,15 +102,55 @@ func (h *ContactHandler) UploadExcel(c *gin.Context) {
 	})
 }
 
-// GetContacts obtiene todos los contactos
+// GetContacts obtiene contactos con paginación
 func (h *ContactHandler) GetContacts(c *gin.Context) {
-	contacts, err := h.contactService.GetAllContacts()
+	// Parámetros de paginación
+	pageStr := c.DefaultQuery("page", "1")
+	limitStr := c.DefaultQuery("limit", "50")
+	
+	page, err := strconv.Atoi(pageStr)
+	if err != nil || page < 1 {
+		page = 1
+	}
+	
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit < 1 || limit > 100 {
+		limit = 50
+	}
+
+	allContacts, err := h.contactService.GetAllContacts()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "No se pudieron obtener los contactos"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": contacts})
+	total := len(allContacts)
+	start := (page - 1) * limit
+	end := start + limit
+
+	if start > total {
+		start = total
+	}
+	if end > total {
+		end = total
+	}
+
+	var paginatedContacts []*entities.Contact
+	if start < total {
+		paginatedContacts = allContacts[start:end]
+	}
+
+	totalPages := (total + limit - 1) / limit
+
+	c.JSON(http.StatusOK, gin.H{
+		"data":        paginatedContacts,
+		"total":       total,
+		"page":        page,
+		"limit":       limit,
+		"total_pages": totalPages,
+		"has_next":    page < totalPages,
+		"has_prev":    page > 1,
+	})
 }
 
 // SearchContacts busca contactos por diferentes campos
@@ -147,29 +183,105 @@ func (h *ContactHandler) UpdateContact(c *gin.Context) {
 
 	var contact entities.Contact
 	if err := c.ShouldBindJSON(&contact); err != nil {
+		fmt.Printf("Error binding JSON: %v\n", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Datos inválidos"})
 		return
 	}
 
+	// Debug: mostrar los datos recibidos
+	fmt.Printf("DEBUG: Actualizando contacto ID %d\n", id)
+	fmt.Printf("DEBUG: Datos recibidos: %+v\n", contact)
+
 	contact.ID = id
+	
+	// Limpiar y validar datos antes de actualizar
+	contact.ClientKey = strings.TrimSpace(contact.ClientKey)
+	contact.Name = strings.TrimSpace(contact.Name)
+	contact.Email = strings.TrimSpace(contact.Email)
+	contact.Phone = strings.TrimSpace(contact.Phone)
+	
+	fmt.Printf("DEBUG: Datos después de limpiar: %+v\n", contact)
+	
 	err = h.contactService.UpdateContact(&contact)
 	if err != nil {
+		fmt.Printf("Error updating contact: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "No se pudo actualizar el contacto"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Contacto actualizado exitosamente"})
+	fmt.Printf("DEBUG: Contacto actualizado exitosamente\n")
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Contacto actualizado exitosamente",
+		"contact": contact,
+	})
 }
 
-// ValidateContacts valida todos los contactos y retorna errores
+// ValidateContacts valida todos los contactos y retorna errores con paginación
 func (h *ContactHandler) ValidateContacts(c *gin.Context) {
-	results, err := h.contactService.ValidateAllContacts()
+	// Parámetros de paginación
+	pageStr := c.DefaultQuery("page", "1")
+	limitStr := c.DefaultQuery("limit", "50")
+	
+	page, err := strconv.Atoi(pageStr)
+	if err != nil || page < 1 {
+		page = 1
+	}
+	
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit < 1 || limit > 100 {
+		limit = 50
+	}
+
+	// Obtener todas las validaciones
+	allResults, err := h.contactService.ValidateAllContacts()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "No se pudo validar los contactos"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": results})
+	total := len(allResults)
+	start := (page - 1) * limit
+	end := start + limit
+
+	if start > total {
+		start = total
+	}
+	if end > total {
+		end = total
+	}
+
+	var paginatedResults []*entities.ContactWithValidation
+	if start < total {
+		paginatedResults = allResults[start:end]
+	}
+
+	totalPages := (total + limit - 1) / limit
+
+	// Calcular estadísticas de todos los resultados
+	validCount := 0
+	invalidCount := 0
+	for _, result := range allResults {
+		if result.IsValid {
+			validCount++
+		} else {
+			invalidCount++
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data":        paginatedResults,
+		"total":       total,
+		"page":        page,
+		"limit":       limit,
+		"total_pages": totalPages,
+		"has_next":    page < totalPages,
+		"has_prev":    page > 1,
+		"stats": gin.H{
+			"total":   total,
+			"valid":   validCount,
+			"invalid": invalidCount,
+		},
+	})
 }
 
 // DownloadExcel genera y descarga un archivo Excel con todos los contactos actuales
